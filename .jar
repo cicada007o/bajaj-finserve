@@ -1,0 +1,173 @@
+# Quick Project Creation Script
+# Run this in your terminal to create the complete project
+
+mkdir webhook-app && cd webhook-app
+
+# Create pom.xml
+cat > pom.xml << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.bajaj</groupId>
+    <artifactId>webhook-app</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>webhook-app</name>
+    <description>Bajaj Finserv Webhook Application</description>
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+EOF
+
+# Create directory structure
+mkdir -p src/main/java/com/bajaj/webhook
+mkdir -p src/main/resources
+
+# Create main application
+cat > src/main/java/com/bajaj/webhook/WebhookApplication.java << 'EOF'
+package com.bajaj.webhook;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.beans.factory.annotation.Autowired;
+
+@SpringBootApplication
+public class WebhookApplication implements CommandLineRunner {
+
+    @Autowired
+    private WebhookService webhookService;
+
+    public static void main(String[] args) {
+        SpringApplication.run(WebhookApplication.class, args);
+    }
+
+    @Override
+    public void run(String... args) throws Exception {
+        String regNo = args.length > 0 ? args[0] : "REG12347";
+        System.out.println("Starting webhook process with regNo: " + regNo);
+        webhookService.processWebhook(regNo);
+        System.exit(0);
+    }
+}
+EOF
+
+# Create service
+cat > src/main/java/com/bajaj/webhook/WebhookService.java << 'EOF'
+package com.bajaj.webhook;
+
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.http.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+
+@Service
+public class WebhookService {
+
+    private final RestTemplate restTemplate = new RestTemplate();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    public void processWebhook(String regNo) {
+        try {
+            WebhookResponse response = generateWebhook(regNo);
+            System.out.println("Webhook generated successfully");
+            
+            String sqlQuery = getSqlQueryBasedOnRegNo(regNo);
+            System.out.println("Generated SQL Query: " + sqlQuery);
+            
+            submitSolution(response.getWebhook(), response.getAccessToken(), sqlQuery);
+            System.out.println("Solution submitted successfully");
+            
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private WebhookResponse generateWebhook(String regNo) throws Exception {
+        String url = "https://bfhldevapigw.healthrx.co.in/hiring/generateWebhook/JAVA";
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        String requestBody = String.format("{\"name\":\"John Doe\",\"regNo\":\"%s\",\"email\":\"john@example.com\"}", regNo);
+        HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+        ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String.class);
+        JsonNode jsonNode = objectMapper.readTree(response.getBody());
+        return new WebhookResponse(jsonNode.get("webhook").asText(), jsonNode.get("accessToken").asText());
+    }
+
+    private String getSqlQueryBasedOnRegNo(String regNo) {
+        String lastTwoDigits = regNo.replaceAll("\\D", "");
+        int lastTwo = Integer.parseInt(lastTwoDigits.substring(lastTwoDigits.length() - 2));
+        
+        if (lastTwo % 2 == 1) {
+            return "SELECT p.AMOUNT as SALARY, CONCAT(e.FIRST_NAME, ' ', e.LAST_NAME) as NAME, TIMESTAMPDIFF(YEAR, e.DOB, CURDATE()) as AGE, d.DEPARTMENT_NAME FROM PAYMENTS p JOIN EMPLOYEE e ON p.EMP_ID = e.EMP_ID JOIN DEPARTMENT d ON e.DEPARTMENT = d.DEPARTMENT_ID WHERE DAY(p.PAYMENT_TIME) != 1 ORDER BY p.AMOUNT DESC LIMIT 1";
+        } else {
+            return "SELECT e1.EMP_ID, e1.FIRST_NAME, e1.LAST_NAME, d.DEPARTMENT_NAME, COUNT(e2.EMP_ID) as YOUNGER_EMPLOYEES_COUNT FROM EMPLOYEE e1 JOIN DEPARTMENT d ON e1.DEPARTMENT = d.DEPARTMENT_ID LEFT JOIN EMPLOYEE e2 ON e1.DEPARTMENT = e2.DEPARTMENT AND e2.DOB > e1.DOB GROUP BY e1.EMP_ID, e1.FIRST_NAME, e1.LAST_NAME, d.DEPARTMENT_NAME ORDER BY e1.EMP_ID DESC";
+        }
+    }
+
+    private void submitSolution(String webhookUrl, String accessToken, String sqlQuery) throws Exception {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", accessToken);
+        String requestBody = String.format("{\"finalQuery\":\"%s\"}", sqlQuery.replace("\"", "\\\""));
+        HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+        ResponseEntity<String> response = restTemplate.postForEntity(webhookUrl, entity, String.class);
+        System.out.println("Response: " + response.getBody());
+    }
+}
+EOF
+
+# Create response model
+cat > src/main/java/com/bajaj/webhook/WebhookResponse.java << 'EOF'
+package com.bajaj.webhook;
+
+public class WebhookResponse {
+    private String webhook;
+    private String accessToken;
+
+    public WebhookResponse() {}
+    public WebhookResponse(String webhook, String accessToken) {
+        this.webhook = webhook;
+        this.accessToken = accessToken;
+    }
+
+    public String getWebhook() { return webhook; }
+    public void setWebhook(String webhook) { this.webhook = webhook; }
+    public String getAccessToken() { return accessToken; }
+    public void setAccessToken(String accessToken) { this.accessToken = accessToken; }
+}
+EOF
+
+# Create empty properties file
+touch src/main/resources/application.properties
+
+echo "✅ Project created successfully!"
+echo "📁 Navigate to webhook-app folder"
+echo "🚀 Run: mvn clean package"
+echo "🎯 JAR file will be created in target/ folder"
